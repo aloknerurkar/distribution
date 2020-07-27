@@ -27,6 +27,7 @@ require (
 	github.com/marstr/guid v1.1.0 // indirect
 	github.com/mitchellh/mapstructure v1.1.2
 	github.com/mitchellh/osext v0.0.0-20151018003038-5e2d6d41470f // indirect
+	github.com/multiformats/go-multiaddr v0.2.2
 	github.com/ncw/swift v1.0.47
 	github.com/opencontainers/go-digest v1.0.0-rc1
 	github.com/opencontainers/image-spec v1.0.1

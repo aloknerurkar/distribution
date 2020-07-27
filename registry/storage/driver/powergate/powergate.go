@@ -1,12 +1,15 @@
 package powergate
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	storagedriver "github.com/docker/distribution/registry/storage/driver"
+	"github.com/docker/distribution/registry/storage/driver/factory"
 	manifest "github.com/docker/distribution/registry/storage/driver/powergate/manifest"
 	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multiaddr"
 	pow "github.com/textileio/powergate/api/client"
 	"io"
 	"io/ioutil"
@@ -22,6 +25,16 @@ const (
 	rootPath   = "/"
 )
 
+func init() {
+	factory.Register(driverName, &powFactory{})
+}
+
+type powFactory struct{}
+
+func (p *powFactory) Create(params map[string]interface{}) (storagedriver.StorageDriver, error) {
+	return New(params)
+}
+
 var _ storagedriver.StorageDriver = &powergateDriver{}
 
 type powergateDriver struct {
@@ -30,8 +43,42 @@ type powergateDriver struct {
 	prefix string
 }
 
-func New() {
+func New(params map[string]interface{}) (storagedriver.StorageDriver, error) {
+	api := params["powinstance"]
+	if api == nil {
+		return nil, fmt.Errorf("Pow instance address required")
+	}
+	apiAddr, err := multiaddr.NewMultiaddr(api.(string))
+	if err != nil {
+		return nil, fmt.Errorf("")
+	}
+	c, err := pow.NewClient(apiAddr)
+	if err != nil {
+		return nil, fmt.Errorf("")
+	}
+	token := params["token"]
+	if token == nil {
+		_, token, err = c.FFS.Create(context.Background())
+		if err != nil {
 
+		}
+	}
+	root := params["powpath"]
+	if root == nil {
+		root = "./.powDriver"
+	}
+	bkp := params["manifest"]
+	if bkp != nil {
+		bkpCid, err := cid.Decode(bkp.(string))
+		if err != nil {
+
+		}
+		rdr, err := c.FFS.Get(context.Background(), bkpCid)
+		if err != nil {
+
+		}
+	}
+	return nil, nil
 }
 
 func (p *powergateDriver) Name() string {
@@ -47,46 +94,6 @@ func (p *powergateDriver) GetContent(
 		return nil, fmt.Errorf("pow: Failed to get content Err:%s", err)
 	}
 	return ioutil.ReadAll(rdr)
-}
-
-func (p *powergateDriver) PutContent(
-	ctx context.Context,
-	path string,
-	content []byte,
-) error {
-	fp := fullPath(path)
-	// Read parent inode. Create if it doesn't exist
-	parentIno := &manifest.PowInode{
-		Name: getParentPath(fp),
-	}
-	err := p.readOrCreate(parentIno)
-	if err != nil {
-		return err
-	}
-	c, err := p.api.FFS.AddToHot(ctx, bytes.NewBuffer(content))
-	if err != nil {
-		return fmt.Errorf("pow: Failed adding to Hot storage Err:%s", err.Error())
-	}
-	// Once the content is pushed successfully to Hot storage, create the
-	// manifest items. Add new item for the new path and also check if parent
-	// needs to be updated
-	ino := &manifest.PowInode{
-		Name: fp,
-		Hash: c.String(),
-	}
-	err = p.pm.Create(ino)
-	if err != nil {
-		return fmt.Errorf("pow: Failed creating new node Err:%s", err.Error())
-	}
-	if parentIno.Children == nil {
-		parentIno.Children = []string{}
-	}
-	parentIno.Children = append(parentIno.Children, fp)
-	err = p.pm.Update(parentIno)
-	if err != nil {
-		return fmt.Errorf("pow: Failed updating parent node Err:%s", err.Error())
-	}
-	return nil
 }
 
 func (p *powergateDriver) Reader(
@@ -109,8 +116,49 @@ func (p *powergateDriver) Reader(
 	if err != nil {
 		return nil, fmt.Errorf("pow: Failed getting data from FFS Err:%s", err.Error())
 	}
-	// TODO: Go to offset
+	if offset > 0 {
+		newRdr := bufio.NewReader(rdr)
+		_, err = newRdr.Discard(int(offset) - 1)
+		if err != nil {
+			return nil, fmt.Errorf("pow: Failed to go to offset Err:%s", err.Error())
+		}
+		return ioutil.NopCloser(newRdr), nil
+	}
 	return ioutil.NopCloser(rdr), nil
+}
+
+func (p *powergateDriver) PutContent(
+	ctx context.Context,
+	path string,
+	content []byte,
+) error {
+	// Read parent inode. Create if it doesn't exist
+	parentIno := &manifest.PowInode{
+		Name: getParentPath(fullPath(path)),
+	}
+	err := p.readOrCreate(parentIno)
+	if err != nil {
+		return err
+	}
+	ino := &manifest.PowInode{
+		Name: fullPath(path),
+	}
+	err = p.pm.Read(ino)
+	if err != nil {
+		err = p.pm.Create(ino)
+		if err != nil {
+			return fmt.Errorf("pow: Failed creating new node Err:%s", err.Error())
+		}
+	}
+	err = p.addOrReplaceNode(ctx, ino, bytes.NewBuffer(content))
+	if err != nil {
+		return err
+	}
+	err = p.updateParent(parentIno, ino.Path())
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *powergateDriver) Writer(
@@ -132,49 +180,50 @@ func (p *powergateDriver) Writer(
 	if app {
 		err = p.pm.Read(fIno)
 		if err != nil {
-
+			return nil, fmt.Errorf("pow: Failed to read node Err:%s", err.Error())
 		}
 	} else {
 		err = p.pm.Create(fIno)
 		if err != nil {
-
+			return nil, fmt.Errorf("pow: Failed to create node Err:%s", err.Error())
 		}
 	}
 	pf := &powFile{
-		onSuccess: func(c *cid.Cid) error {
-			if len(fIno.Hash) > 0 {
-				c1, err := cid.Decode(fIno.Hash)
-				if err != nil {
-
-				}
-				jb, err := p.api.FFS.Replace(ctx, c1, *c)
-				if err != nil {
-
-				}
-				fIno.JobID = string(jb)
-			} else {
-				jb, err := p.api.FFS.PushConfig(ctx, *c)
-				if err != nil {
-
-				}
-				fIno.JobID = string(jb)
-			}
-			if !app {
-				parentIno.Children = append(parentIno.Children, fIno.Path())
-				err = p.pm.Update(parentIno)
-				if err != nil {
-
-				}
-			}
-			fIno.Hash = c.String()
-			err = p.pm.Update(fIno)
-			if err != nil {
-
-			}
-			return nil
-		},
+		driver: p,
+		nd:     fIno,
+		buf:    new(bytes.Buffer),
 	}
-	pf.startWorker(ctx)
+	r := &customReader{buf: pf.buf, done: make(chan bool, 1)}
+	if app {
+		if len(fIno.Hash) > 0 {
+			// Read old contents back to reader to replay. As content will be same
+			// this replay operation should serve the purpose of linking the CIDs to
+			// the new item DAG
+			ctCid, err := cid.Decode(fIno.Hash)
+			if err != nil {
+				return nil, fmt.Errorf("pow: Failed decoding previous CID Err:%s", err.Error())
+			}
+			rdr, err := p.api.FFS.Get(ctx, ctCid)
+			if err != nil {
+				return nil, fmt.Errorf("pow: Failed getting previous CID Err:%s", err.Error())
+			}
+			b := make([]byte, 32768)
+			for {
+				n, err := rdr.Read(b)
+				if err == nil {
+					_, err = pf.buf.Write(b)
+				}
+				if err != nil {
+					return nil, fmt.Errorf(
+						"pow: Failed replaying previous CID content Err:%s", err.Error())
+				}
+				if n < 32768 {
+					break
+				}
+			}
+		}
+	}
+	pf.startWorker(ctx, r)
 	return pf, nil
 }
 
@@ -216,10 +265,12 @@ func (p *powergateDriver) Move(
 		Name: getParentPath(fullPath(destPath)),
 	}
 	err = p.readOrCreate(newParent)
-	newParent.Children = append(newParent.Children, fullPath(destPath))
-	err = p.pm.Update(newParent)
 	if err != nil {
-		return fmt.Errorf("pow: Failed updating new parent node Err:%s", err.Error())
+		return err
+	}
+	err = p.updateParent(newParent, fullPath(destPath))
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -291,6 +342,55 @@ func (p *powergateDriver) cleanupParent(fp string) error {
 	return nil
 }
 
+func (p *powergateDriver) addOrReplaceNode(
+	ctx context.Context,
+	fIno *manifest.PowInode,
+	rdr io.Reader,
+) error {
+	c, err := p.api.FFS.AddToHot(ctx, rdr)
+	if err != nil {
+		return fmt.Errorf("pow: Failed adding to Hot storage Err:%s", err.Error())
+	}
+	if len(fIno.Hash) > 0 {
+		c1, err := cid.Decode(fIno.Hash)
+		if err != nil {
+			return fmt.Errorf("pow: Failed to decode existing hash Err:%s", err.Error())
+		}
+		jb, err := p.api.FFS.Replace(ctx, c1, *c)
+		if err != nil {
+			return fmt.Errorf("pow: Failed to replace existing hash Err:%s", err.Error())
+		}
+		fIno.JobID = string(jb)
+	} else {
+		jb, err := p.api.FFS.PushConfig(ctx, *c)
+		if err != nil {
+			return fmt.Errorf("pow: Failed to replace existing hash Err:%s", err.Error())
+		}
+		fIno.JobID = string(jb)
+	}
+	return p.pm.Update(fIno)
+}
+
+func (p *powergateDriver) updateParent(parentIno *manifest.PowInode, child string) error {
+	if parentIno.Children == nil {
+		parentIno.Children = []string{}
+	}
+	found := false
+	for _, v := range parentIno.Children {
+		if v == child {
+			found = true
+		}
+	}
+	if !found {
+		parentIno.Children = append(parentIno.Children, child)
+		err := p.pm.Update(parentIno)
+		if err != nil {
+			return fmt.Errorf("pow: Failed updating parent node Err:%s", err.Error())
+		}
+	}
+	return nil
+}
+
 func (p *powergateDriver) URLFor(
 	ctx context.Context,
 	path string,
@@ -316,10 +416,7 @@ func (q *queryQueue) Push(i string) {
 func (q *queryQueue) Pop() string {
 	q.mtx.Lock()
 	defer q.mtx.Unlock()
-	if q.items == nil {
-		return ""
-	}
-	if len(q.items) == 0 {
+	if q.items == nil || len(q.items) == 0 {
 		return ""
 	}
 	itemToReturn := q.items[0]
@@ -355,9 +452,25 @@ func (p *powergateDriver) Walk(
 	return nil
 }
 
-// Private routines
+// Helper routines
 func (p *powergateDriver) mkdirAll(parent string) (*manifest.PowInode, error) {
-	return nil, nil
+	if parent != rootPath {
+		gp, err := p.mkdirAll(path.Dir(parent))
+		if err == nil {
+			err = p.updateParent(gp, parent)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	pIno := &manifest.PowInode{
+		Name: parent,
+	}
+	err := p.pm.Read(pIno)
+	if err != nil {
+		err = p.pm.Create(pIno)
+	}
+	return pIno, err
 }
 
 // Helpers
@@ -377,20 +490,17 @@ type customReader struct {
 
 func (c *customReader) Read(p []byte) (int, error) {
 	if c.quit && c.buf.Len() == 0 {
-		// log.Printf("Quitting read operation")
 		return 0, io.EOF
 	}
 	for {
 		select {
 		case <-c.done:
-			// log.Printf("Got done")
 			c.quit = true
 		default:
 			if c.buf.Len() >= len(p) {
 				return c.buf.Read(p)
 			}
 			if c.quit && c.buf.Len() > 0 {
-				// log.Printf("Got quit, emptying buffer")
 				return c.buf.Read(p)
 			}
 		}
@@ -398,11 +508,12 @@ func (c *customReader) Read(p []byte) (int, error) {
 }
 
 func (c *customReader) Close() error {
+	c.done <- true
 	return nil
 }
 
 type powFile struct {
-	api       *pow.FFS
+	driver    *powergateDriver
 	nd        *manifest.PowInode
 	size      int64
 	buf       *bytes.Buffer
@@ -412,26 +523,23 @@ type powFile struct {
 	committed bool
 	done      func()
 	cancel    func()
-	onSuccess func(*cid.Cid) error
 }
 
-func (g *powFile) startWorker(pCtx context.Context) {
+func (g *powFile) startWorker(pCtx context.Context, rdr io.ReadCloser) {
 	ctx, cancel := context.WithTimeout(pCtx, time.Minute*15)
-	r := &customReader{buf: g.buf, done: make(chan bool, 1)}
-
 	wg := &sync.WaitGroup{}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c, err := g.api.AddToHot(ctx, r)
+		err := g.driver.addOrReplaceNode(ctx, g.nd, rdr)
 		if err != nil && err != context.Canceled {
 			g.err = err
 			return
 		}
-		g.onSuccess(c)
 	}()
 	g.done = func() {
-		r.done <- true
+		rdr.Close()
 		wg.Wait()
 	}
 	g.cancel = func() {

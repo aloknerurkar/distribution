@@ -37,3 +37,7 @@ type PowManifest interface {
 	Update(*PowInode) error
 	Delete(*PowInode) error
 }
+
+func Init() (PowManifest, error) {
+	return nil, nil
+}
