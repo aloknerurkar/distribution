@@ -1,7 +1,11 @@
 package powManifest
 
 import (
+	"encoding/json"
 	"errors"
+	dsstore "github.com/StreamSpace/ss-ds-store"
+	"github.com/StreamSpace/ss-store"
+	badger "github.com/ipfs/go-ds-badger"
 	"time"
 )
 
@@ -29,15 +33,43 @@ func (p *PowInode) IsDir() bool {
 	return p.Dir
 }
 
+func (p *PowInode) GetId() string {
+	return p.Name
+}
+
+func (p *PowInode) GetNamespace() string {
+	return "powInode"
+}
+
+func (p *PowInode) SetCreated(t int64) {
+	p.Created = t
+}
+
+func (p *PowInode) SetUpdated(t int64) {
+	p.Updated = t
+}
+
+func (p *PowInode) Marshal() ([]byte, error) {
+	return json.Marshal(p)
+}
+
+func (p *PowInode) Unmarshal(buf []byte) error {
+	return json.Unmarshal(buf, p)
+}
+
 var ErrNotFound error = errors.New("Key not found")
 
 type PowManifest interface {
-	Read(*PowInode) error
-	Create(*PowInode) error
-	Update(*PowInode) error
-	Delete(*PowInode) error
+	store.Store
 }
 
-func Init() (PowManifest, error) {
-	return nil, nil
+func Init(root string) (PowManifest, error) {
+	ds, err := badger.NewDatastore(root, &badger.DefaultOptions)
+	if err != nil {
+		return nil, err
+	}
+	st, _ := dsstore.NewDataStore(&dsstore.DSConfig{
+		DS: ds,
+	})
+	return st, nil
 }

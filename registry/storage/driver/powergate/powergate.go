@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"os/user"
 	"path"
 	"strings"
 	"sync"
@@ -38,47 +39,57 @@ func (p *powFactory) Create(params map[string]interface{}) (storagedriver.Storag
 var _ storagedriver.StorageDriver = &powergateDriver{}
 
 type powergateDriver struct {
-	pm     manifest.PowManifest
-	api    *pow.Client
-	prefix string
+	pm  manifest.PowManifest
+	api *pow.Client
 }
 
 func New(params map[string]interface{}) (storagedriver.StorageDriver, error) {
-	api := params["powinstance"]
+	api := params["powaddress"]
 	if api == nil {
 		return nil, fmt.Errorf("Pow instance address required")
 	}
 	apiAddr, err := multiaddr.NewMultiaddr(api.(string))
 	if err != nil {
-		return nil, fmt.Errorf("")
+		return nil, fmt.Errorf("Failed to create multiaddr Err:%s", err.Error())
 	}
 	c, err := pow.NewClient(apiAddr)
 	if err != nil {
-		return nil, fmt.Errorf("")
+		return nil, fmt.Errorf("Failed to create new POW client Err:%s", err.Error())
 	}
 	token := params["token"]
 	if token == nil {
 		_, token, err = c.FFS.Create(context.Background())
 		if err != nil {
-
+			return nil, fmt.Errorf("Failed to create new POW instance Err:%s", err.Error())
 		}
 	}
 	root := params["powpath"]
 	if root == nil {
-		root = "./.powDriver"
-	}
-	bkp := params["manifest"]
-	if bkp != nil {
-		bkpCid, err := cid.Decode(bkp.(string))
+		usr, err := user.Current()
 		if err != nil {
-
+			return nil, fmt.Errorf("Failed getting user Err:%s", err.Error())
 		}
-		rdr, err := c.FFS.Get(context.Background(), bkpCid)
-		if err != nil {
-
-		}
+		root = usr.HomeDir + string(os.PathSeparator) + ".pow_driver"
 	}
-	return nil, nil
+	m, err := manifest.Init(root.(string))
+	if err != nil {
+		return nil, fmt.Errorf("Failed creating manifest Err:%s", err.Error())
+	}
+	// bkp := params["manifest"]
+	// if bkp != nil {
+	// 	bkpCid, err := cid.Decode(bkp.(string))
+	// 	if err != nil {
+
+	// 	}
+	// 	rdr, err := c.FFS.Get(context.Background(), bkpCid)
+	// 	if err != nil {
+
+	// 	}
+	// }
+	return &powergateDriver{
+		api: c,
+		pm:  m,
+	}, nil
 }
 
 func (p *powergateDriver) Name() string {
