@@ -3,6 +3,7 @@ package powManifest
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	dsstore "github.com/StreamSpace/ss-ds-store"
 	"github.com/StreamSpace/ss-store"
 	badger "github.com/ipfs/go-ds-badger"
@@ -68,6 +69,7 @@ func Init(root string) (PowManifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("Created new store at %s", root)
 	st, _ := dsstore.NewDataStore(&dsstore.DSConfig{
 		DS: ds,
 	})

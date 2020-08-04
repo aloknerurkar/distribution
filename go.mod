@@ -37,7 +37,7 @@ require (
 	github.com/satori/go.uuid v1.2.0 // indirect
 	github.com/sirupsen/logrus v1.6.0
 	github.com/spf13/cobra v1.0.0
-	github.com/textileio/powergate v0.1.1
+	github.com/textileio/powergate v0.3.0
 	github.com/yvasiyarov/go-metrics v0.0.0-20140926110328-57bccd1ccd43 // indirect
 	github.com/yvasiyarov/gorelic v0.0.0-20141212073537-a9bba5b9ab50
 	github.com/yvasiyarov/newrelic_platform_go v0.0.0-20140908184405-b21fdbd4370f // indirect
@@ -45,6 +45,7 @@ require (
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
 	google.golang.org/api v0.25.0
 	google.golang.org/cloud v0.0.0-20151119220103-975617b05ea8
+	google.golang.org/grpc v1.30.0
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15
 	gopkg.in/yaml.v2 v2.2.8
 )

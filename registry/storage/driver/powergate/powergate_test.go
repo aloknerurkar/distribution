@@ -21,7 +21,7 @@ func init() {
 	defer os.Remove(root)
 
 	driver, err := New(map[string]interface{}{
-		"powaddress": "http://localhost:4001",
+		"powaddress": "127.0.0.1:5002",
 		"powpath":    root,
 	})
 	if err != nil {

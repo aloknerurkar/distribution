@@ -9,8 +9,8 @@ import (
 	"github.com/docker/distribution/registry/storage/driver/factory"
 	manifest "github.com/docker/distribution/registry/storage/driver/powergate/manifest"
 	"github.com/ipfs/go-cid"
-	"github.com/multiformats/go-multiaddr"
 	pow "github.com/textileio/powergate/api/client"
+	"google.golang.org/grpc"
 	"io"
 	"io/ioutil"
 	"os"
@@ -39,8 +39,9 @@ func (p *powFactory) Create(params map[string]interface{}) (storagedriver.Storag
 var _ storagedriver.StorageDriver = &powergateDriver{}
 
 type powergateDriver struct {
-	pm  manifest.PowManifest
-	api *pow.Client
+	pm    manifest.PowManifest
+	api   *pow.Client
+	token string
 }
 
 func New(params map[string]interface{}) (storagedriver.StorageDriver, error) {
@@ -48,11 +49,7 @@ func New(params map[string]interface{}) (storagedriver.StorageDriver, error) {
 	if api == nil {
 		return nil, fmt.Errorf("Pow instance address required")
 	}
-	apiAddr, err := multiaddr.NewMultiaddr(api.(string))
-	if err != nil {
-		return nil, fmt.Errorf("Failed to create multiaddr Err:%s", err.Error())
-	}
-	c, err := pow.NewClient(apiAddr)
+	c, err := pow.NewClient(api.(string), grpc.WithInsecure())
 	if err != nil {
 		return nil, fmt.Errorf("Failed to create new POW client Err:%s", err.Error())
 	}
@@ -63,6 +60,7 @@ func New(params map[string]interface{}) (storagedriver.StorageDriver, error) {
 			return nil, fmt.Errorf("Failed to create new POW instance Err:%s", err.Error())
 		}
 	}
+	fmt.Printf("TOKEN %v\n", token)
 	root := params["powpath"]
 	if root == nil {
 		usr, err := user.Current()
@@ -87,9 +85,15 @@ func New(params map[string]interface{}) (storagedriver.StorageDriver, error) {
 	// 	}
 	// }
 	return &powergateDriver{
-		api: c,
-		pm:  m,
+		api:   c,
+		pm:    m,
+		token: token.(string),
 	}, nil
+}
+
+func (p *powergateDriver) reqCtx(parent context.Context) context.Context {
+	fmt.Printf("reqCtx %s\n", p.token)
+	return context.WithValue(parent, pow.AuthKey, p.token)
 }
 
 func (p *powergateDriver) Name() string {
@@ -100,7 +104,8 @@ func (p *powergateDriver) GetContent(
 	ctx context.Context,
 	path string,
 ) ([]byte, error) {
-	rdr, err := p.Reader(ctx, path, 0)
+	fmt.Println("GetContent")
+	rdr, err := p.Reader(p.reqCtx(ctx), path, 0)
 	if err != nil {
 		return nil, fmt.Errorf("pow: Failed to get content Err:%s", err)
 	}
@@ -112,6 +117,7 @@ func (p *powergateDriver) Reader(
 	path string,
 	offset int64,
 ) (io.ReadCloser, error) {
+	fmt.Println("Reader")
 	ino := &manifest.PowInode{
 		Name: fullPath(path),
 	}
@@ -123,7 +129,7 @@ func (p *powergateDriver) Reader(
 	if err != nil {
 		return nil, fmt.Errorf("pow: Failed decoding CID from node Err:%s", err.Error())
 	}
-	rdr, err := p.api.FFS.Get(ctx, ctCid)
+	rdr, err := p.api.FFS.Get(p.reqCtx(ctx), ctCid)
 	if err != nil {
 		return nil, fmt.Errorf("pow: Failed getting data from FFS Err:%s", err.Error())
 	}
@@ -143,6 +149,7 @@ func (p *powergateDriver) PutContent(
 	path string,
 	content []byte,
 ) error {
+	fmt.Println("PutContent")
 	// Read parent inode. Create if it doesn't exist
 	parentIno := &manifest.PowInode{
 		Name: getParentPath(fullPath(path)),
@@ -161,7 +168,7 @@ func (p *powergateDriver) PutContent(
 			return fmt.Errorf("pow: Failed creating new node Err:%s", err.Error())
 		}
 	}
-	err = p.addOrReplaceNode(ctx, ino, bytes.NewBuffer(content))
+	err = p.addOrReplaceNode(p.reqCtx(ctx), ino, bytes.NewBuffer(content))
 	if err != nil {
 		return err
 	}
@@ -177,6 +184,7 @@ func (p *powergateDriver) Writer(
 	path string,
 	app bool,
 ) (storagedriver.FileWriter, error) {
+	fmt.Println("Writer", path)
 	// Read parent inode. Create if it doesn't exist
 	parentIno := &manifest.PowInode{
 		Name: getParentPath(fullPath(path)),
@@ -214,7 +222,7 @@ func (p *powergateDriver) Writer(
 			if err != nil {
 				return nil, fmt.Errorf("pow: Failed decoding previous CID Err:%s", err.Error())
 			}
-			rdr, err := p.api.FFS.Get(ctx, ctCid)
+			rdr, err := p.api.FFS.Get(p.reqCtx(ctx), ctCid)
 			if err != nil {
 				return nil, fmt.Errorf("pow: Failed getting previous CID Err:%s", err.Error())
 			}
@@ -234,7 +242,7 @@ func (p *powergateDriver) Writer(
 			}
 		}
 	}
-	pf.startWorker(ctx, r)
+	pf.startWorker(p.reqCtx(ctx), r)
 	return pf, nil
 }
 
@@ -242,6 +250,7 @@ func (p *powergateDriver) Stat(
 	ctx context.Context,
 	path string,
 ) (storagedriver.FileInfo, error) {
+	fmt.Println("Stat")
 	ino := &manifest.PowInode{
 		Name: fullPath(path),
 	}
@@ -253,6 +262,7 @@ func (p *powergateDriver) Stat(
 }
 
 func (p *powergateDriver) List(ctx context.Context, path string) ([]string, error) {
+	fmt.Println("List")
 	ino := &manifest.PowInode{
 		Name: fullPath(path),
 	}
@@ -268,6 +278,7 @@ func (p *powergateDriver) Move(
 	sourcePath string,
 	destPath string,
 ) error {
+	fmt.Println("Move")
 	err := p.cleanupParent(fullPath(sourcePath))
 	if err != nil {
 		return err
@@ -287,6 +298,7 @@ func (p *powergateDriver) Move(
 }
 
 func (p *powergateDriver) Delete(ctx context.Context, path string) error {
+	fmt.Println("Delete")
 	ino := &manifest.PowInode{
 		Name: fullPath(path),
 	}
@@ -294,11 +306,16 @@ func (p *powergateDriver) Delete(ctx context.Context, path string) error {
 	if err != nil {
 		return fmt.Errorf("pow: Failed reading node Err:%s", err.Error())
 	}
+	if ino.IsDir() {
+		fmt.Println("Directory delete")
+		return nil
+	}
+	defer fmt.Println("Delete done")
 	ctCid, err := cid.Decode(ino.Hash)
 	if err != nil {
 		return fmt.Errorf("pow: Failed decoding node CID Err:%s", err.Error())
 	}
-	err = p.api.FFS.Remove(ctx, ctCid)
+	err = p.api.FFS.Remove(p.reqCtx(ctx), ctCid)
 	if err != nil {
 		return fmt.Errorf("pow: Failed deleting from pow Err:%s", err.Error())
 	}
@@ -315,10 +332,7 @@ func (p *powergateDriver) Delete(ctx context.Context, path string) error {
 
 func (p *powergateDriver) readOrCreate(ino *manifest.PowInode) error {
 	err := p.pm.Read(ino)
-	if err != nil && err != manifest.ErrNotFound {
-		return fmt.Errorf("pow: Unexpected error in reading node Err:%s", err.Error())
-	}
-	if err == manifest.ErrNotFound {
+	if err != nil {
 		ino, err = p.mkdirAll(ino.Path())
 		if err != nil {
 			return fmt.Errorf("pow: Failed creating parent node Err:%s", err.Error())
@@ -358,10 +372,11 @@ func (p *powergateDriver) addOrReplaceNode(
 	fIno *manifest.PowInode,
 	rdr io.Reader,
 ) error {
-	c, err := p.api.FFS.AddToHot(ctx, rdr)
+	c, err := p.api.FFS.Stage(ctx, rdr)
 	if err != nil {
 		return fmt.Errorf("pow: Failed adding to Hot storage Err:%s", err.Error())
 	}
+	fmt.Println("Current hash", fIno.Hash)
 	if len(fIno.Hash) > 0 {
 		c1, err := cid.Decode(fIno.Hash)
 		if err != nil {
@@ -373,12 +388,14 @@ func (p *powergateDriver) addOrReplaceNode(
 		}
 		fIno.JobID = string(jb)
 	} else {
-		jb, err := p.api.FFS.PushConfig(ctx, *c)
+		jb, err := p.api.FFS.PushStorageConfig(ctx, *c)
 		if err != nil {
 			return fmt.Errorf("pow: Failed to replace existing hash Err:%s", err.Error())
 		}
 		fIno.JobID = string(jb)
 	}
+	fIno.Hash = c.String()
+	fmt.Println("Adding IPFS Hash", fIno.Hash)
 	return p.pm.Update(fIno)
 }
 
