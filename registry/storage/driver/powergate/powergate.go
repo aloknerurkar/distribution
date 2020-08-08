@@ -18,7 +18,6 @@ import (
 	"path"
 	"strings"
 	"sync"
-	"time"
 )
 
 const (
@@ -104,7 +103,8 @@ func (p *powergateDriver) GetContent(
 	ctx context.Context,
 	path string,
 ) ([]byte, error) {
-	fmt.Println("GetContent")
+	fmt.Printf("GetContent %s\n", path)
+	defer fmt.Printf("GetContent done %s\n", path)
 	rdr, err := p.Reader(p.reqCtx(ctx), path, 0)
 	if err != nil {
 		return nil, fmt.Errorf("pow: Failed to get content Err:%s", err)
@@ -117,7 +117,8 @@ func (p *powergateDriver) Reader(
 	path string,
 	offset int64,
 ) (io.ReadCloser, error) {
-	fmt.Println("Reader")
+	fmt.Printf("Reader %s\n", path)
+	defer fmt.Printf("Reader done %s\n", path)
 	ino := &manifest.PowInode{
 		Name: fullPath(path),
 	}
@@ -149,7 +150,8 @@ func (p *powergateDriver) PutContent(
 	path string,
 	content []byte,
 ) error {
-	fmt.Println("PutContent")
+	fmt.Printf("PutContent %s\n", path)
+	defer fmt.Printf("PutContent done %s\n", path)
 	// Read parent inode. Create if it doesn't exist
 	parentIno := &manifest.PowInode{
 		Name: getParentPath(fullPath(path)),
@@ -184,7 +186,8 @@ func (p *powergateDriver) Writer(
 	path string,
 	app bool,
 ) (storagedriver.FileWriter, error) {
-	fmt.Println("Writer", path)
+	fmt.Printf("Writer %s\n", path)
+	defer fmt.Printf("Writer done %s\n", path)
 	// Read parent inode. Create if it doesn't exist
 	parentIno := &manifest.PowInode{
 		Name: getParentPath(fullPath(path)),
@@ -212,7 +215,6 @@ func (p *powergateDriver) Writer(
 		nd:     fIno,
 		buf:    new(bytes.Buffer),
 	}
-	r := &customReader{buf: pf.buf, done: make(chan bool, 1)}
 	if app {
 		if len(fIno.Hash) > 0 {
 			// Read old contents back to reader to replay. As content will be same
@@ -242,7 +244,7 @@ func (p *powergateDriver) Writer(
 			}
 		}
 	}
-	pf.startWorker(p.reqCtx(ctx), r)
+	pf.initWriter(p.reqCtx(ctx))
 	return pf, nil
 }
 
@@ -250,7 +252,8 @@ func (p *powergateDriver) Stat(
 	ctx context.Context,
 	path string,
 ) (storagedriver.FileInfo, error) {
-	fmt.Println("Stat")
+	fmt.Printf("Stat %s\n", path)
+	defer fmt.Printf("Stat done %s\n", path)
 	ino := &manifest.PowInode{
 		Name: fullPath(path),
 	}
@@ -262,7 +265,8 @@ func (p *powergateDriver) Stat(
 }
 
 func (p *powergateDriver) List(ctx context.Context, path string) ([]string, error) {
-	fmt.Println("List")
+	fmt.Printf("List %s\n", path)
+	defer fmt.Printf("List done %s\n", path)
 	ino := &manifest.PowInode{
 		Name: fullPath(path),
 	}
@@ -278,7 +282,8 @@ func (p *powergateDriver) Move(
 	sourcePath string,
 	destPath string,
 ) error {
-	fmt.Println("Move")
+	fmt.Println("Move", sourcePath, destPath)
+	defer fmt.Println("Move done", sourcePath, destPath)
 	err := p.cleanupParent(fullPath(sourcePath))
 	if err != nil {
 		return err
@@ -298,7 +303,8 @@ func (p *powergateDriver) Move(
 }
 
 func (p *powergateDriver) Delete(ctx context.Context, path string) error {
-	fmt.Println("Delete")
+	fmt.Printf("Delete %s\n", path)
+	defer fmt.Printf("Delete done %s\n", path)
 	ino := &manifest.PowInode{
 		Name: fullPath(path),
 	}
@@ -310,7 +316,6 @@ func (p *powergateDriver) Delete(ctx context.Context, path string) error {
 		fmt.Println("Directory delete")
 		return nil
 	}
-	defer fmt.Println("Delete done")
 	ctCid, err := cid.Decode(ino.Hash)
 	if err != nil {
 		return fmt.Errorf("pow: Failed decoding node CID Err:%s", err.Error())
@@ -457,6 +462,8 @@ func (p *powergateDriver) Walk(
 	path string,
 	f storagedriver.WalkFn,
 ) error {
+	fmt.Printf("Walk %s\n", path)
+	defer fmt.Printf("Walk done %s\n", path)
 	q := &queryQueue{}
 	q.Push(rootPath)
 	for item := q.Pop(); len(item) != 0; item = q.Pop() {
@@ -510,36 +517,6 @@ func getParentPath(name string) string {
 	return path.Dir(name)
 }
 
-type customReader struct {
-	quit bool
-	done chan bool
-	buf  *bytes.Buffer
-}
-
-func (c *customReader) Read(p []byte) (int, error) {
-	if c.quit && c.buf.Len() == 0 {
-		return 0, io.EOF
-	}
-	for {
-		select {
-		case <-c.done:
-			c.quit = true
-		default:
-			if c.buf.Len() >= len(p) {
-				return c.buf.Read(p)
-			}
-			if c.quit && c.buf.Len() > 0 {
-				return c.buf.Read(p)
-			}
-		}
-	}
-}
-
-func (c *customReader) Close() error {
-	c.done <- true
-	return nil
-}
-
 type powFile struct {
 	driver    *powergateDriver
 	nd        *manifest.PowInode
@@ -553,26 +530,19 @@ type powFile struct {
 	cancel    func()
 }
 
-func (g *powFile) startWorker(pCtx context.Context, rdr io.ReadCloser) {
-	ctx, cancel := context.WithTimeout(pCtx, time.Minute*15)
-	wg := &sync.WaitGroup{}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		err := g.driver.addOrReplaceNode(ctx, g.nd, rdr)
+func (g *powFile) initWriter(pCtx context.Context) {
+	ctx, cancel := context.WithCancel(pCtx)
+	g.done = func() {
+		fmt.Printf("Add %s\n", g.nd.Path())
+		defer fmt.Printf("Add done %s\n", g.nd.Path())
+		err := g.driver.addOrReplaceNode(ctx, g.nd, g.buf)
 		if err != nil && err != context.Canceled {
 			g.err = err
 			return
 		}
-	}()
-	g.done = func() {
-		rdr.Close()
-		wg.Wait()
 	}
 	g.cancel = func() {
 		cancel()
-		wg.Wait()
 	}
 }
 
@@ -590,6 +560,8 @@ func (g *powFile) Size() int64 {
 }
 
 func (g *powFile) Close() error {
+	fmt.Printf("Close %s\n", g.nd.Path())
+	defer fmt.Printf("Close done %s\n", g.nd.Path())
 	if g.closed {
 		return fmt.Errorf("powFile: already closed")
 	}
@@ -601,6 +573,8 @@ func (g *powFile) Close() error {
 }
 
 func (g *powFile) Cancel() error {
+	fmt.Printf("Cancel %s\n", g.nd.Path())
+	defer fmt.Printf("Cancel done %s\n", g.nd.Path())
 	if g.closed {
 		return fmt.Errorf("powFile: already closed")
 	} else if g.committed {
@@ -612,6 +586,8 @@ func (g *powFile) Cancel() error {
 }
 
 func (g *powFile) Commit() error {
+	fmt.Printf("Commit %s\n", g.nd.Path())
+	defer fmt.Printf("Commit done %s\n", g.nd.Path())
 	if g.closed {
 		return fmt.Errorf("powFile: already closed")
 	} else if g.committed {

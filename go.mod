@@ -49,3 +49,5 @@ require (
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15
 	gopkg.in/yaml.v2 v2.2.8
 )
+
+replace google.golang.org/api => google.golang.org/api v0.0.0-20160322025152-9bf6e6e569ff
