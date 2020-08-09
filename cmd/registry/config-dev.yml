@@ -23,15 +23,18 @@ storage:
       enabled: true
     cache:
         blobdescriptor: redis
-    filesystem:
-        rootdirectory: /var/lib/registry
+    pow:
+        powaddress: powergate:5002
+        powpath: /var/lib/pow
+    # filesystem:
+    #     rootdirectory: /var/lib/registry
     maintenance:
         uploadpurging:
             enabled: false
 http:
-    addr: :5000
+    addr: :6000
     debug:
-        addr: :5001
+        addr: :6001
         prometheus:
             enabled: true
             path: /metrics
